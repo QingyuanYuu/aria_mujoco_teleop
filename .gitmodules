@@ -1,0 +1,3 @@
+[submodule "mujoco_models/franka_sim"]
+	path = mujoco_models/franka_sim
+	url = https://github.com/vikashplus/franka_sim
