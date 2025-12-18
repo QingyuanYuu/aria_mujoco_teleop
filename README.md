@@ -1,0 +1,159 @@
+# Aria MuJoCo Teleoperation
+
+A real-time teleoperation system that enables control of a MuJoCo-simulated Franka Panda robot using hand tracking from Meta Aria glasses. The system streams hand pose data from the Aria device and uses inverse kinematics to make the robot's end-effector follow your hand movements in real-time.
+
+## Overview
+
+This project provides a seamless interface between Meta Aria's hand tracking capabilities and MuJoCo physics simulation. By tracking your right hand's position and orientation, the system translates your movements into robot control commands, allowing you to manipulate the simulated robot arm naturally.
+
+### Key Features
+
+- **Real-time Hand Tracking**: Streams hand pose data from Meta Aria glasses via HTTP server
+- **Inverse Kinematics Control**: Uses damped least squares (DLS) IK solver to control the robot's end-effector
+- **3D Hand Visualization**: Optional visualization of hand skeleton in the MuJoCo viewer
+- **Configurable Mapping**: Adjustable axis flipping, scaling, and smoothing parameters
+- **Robust Calibration**: Automatic origin calibration on first confident hand detection
+
+## Requirements
+
+### Hardware
+- Meta Aria glasses with hand tracking enabled
+- MacOS (tested on macOS)
+
+### Software Dependencies
+- Python 3.x
+- MuJoCo Python bindings (`mujoco`)
+- Meta Aria SDK (`aria.sdk_gen2`, `aria.stream_receiver`)
+- Project Aria Tools (`projectaria_tools`)
+- NumPy
+
+## Installation
+
+1. **Install MuJoCo Python bindings:**
+   ```bash
+   pip install mujoco
+   ```
+
+2. **Install Meta Aria SDK and Project Aria Tools:**
+   Follow the official Meta Aria SDK installation instructions to set up:
+   - `aria.sdk_gen2`
+   - `aria.stream_receiver`
+   - `projectaria_tools`
+
+3. **Install NumPy:**
+   ```bash
+   pip install numpy
+   ```
+
+## Usage
+
+### Basic Usage (Mac)
+
+On Mac, run the following command:
+
+```bash
+mjpython scripts/aria_follow_mujoco.py \
+  --model mujoco_models/franka_sim/franka_panda.xml \
+  --ee-site end_effector \
+  --show-hand \
+  --flip-z
+```
+
+### Command Line Arguments
+
+#### Required Arguments
+- `--model`: Path to MuJoCo XML model file (e.g., `mujoco_models/franka_sim/franka_panda.xml`)
+- `--ee-site`: Name of the end-effector site in the model (default: `end_effector`)
+
+#### Network Configuration
+- `--host`: Server host address (default: `0.0.0.0`)
+- `--port`: Server port number (default: `6768`)
+
+#### Mapping and Smoothing
+- `--scale`: Scale factor for device delta to MuJoCo meters (default: `1.0`)
+- `--alpha`: EMA smoothing factor (0..1), smaller values = more smoothing (default: `0.2`)
+- `--conf`: Minimum hand confidence threshold to accept updates (default: `0.5`)
+- `--timeout`: Seconds without update before holding target position (default: `0.25`)
+- `--flip-x`: Flip the mapped X axis
+- `--flip-y`: Flip the mapped Y axis
+- `--flip-z`: Flip the mapped Z axis (commonly used for up/down inversion)
+
+#### Inverse Kinematics Parameters
+- `--ik-damping`: Damping factor for DLS IK solver (default: `1e-2`)
+- `--ik-step-scale`: Step scale for IK iterations (default: `0.4`)
+- `--ik-max-dq`: Maximum joint velocity change per step (default: `0.12`)
+
+#### Hand Visualization
+- `--show-hand`: Enable 3D hand skeleton visualization in MuJoCo viewer
+- `--hand-point-size`: Radius of hand point spheres (default: `0.008`)
+- `--hand-edge-radius`: Radius of hand edge capsules (default: `0.004`)
+
+### Operation Flow
+
+1. **Start the Script**: Launch the script with your desired parameters. The system will start an HTTP server listening for Aria device streams.
+
+2. **Start Device Streaming**: Begin streaming from your Meta Aria glasses to the specified host and port.
+
+3. **Calibration**: The system waits for the first confident right-hand detection to establish the origin mapping between your hand position and the robot's end-effector position.
+
+4. **Control**: Move your right hand to control the robot. The end-effector will follow your hand movements in real-time.
+
+5. **Exit**: Close the MuJoCo viewer window or press Ctrl-C to exit.
+
+## Project Structure
+
+```
+aria_mujoco_teleop/
+├── README.md                          # This file
+├── scripts/
+│   └── aria_follow_mujoco.py         # Main teleoperation script
+└── mujoco_models/
+    └── franka_sim/                    # Franka Panda MuJoCo models
+        ├── franka_panda.xml           # Standard Franka Panda model
+        ├── franka_panda_teleop.xml    # Teleoperation-optimized model
+        ├── bi-franka_panda.xml        # Bimanual Franka model
+        ├── assets/                     # Model assets and actuators
+        └── meshes/                     # Robot mesh files
+```
+
+## How It Works
+
+1. **Hand Tracking Stream**: The script starts an HTTP server that receives hand tracking data from the Meta Aria device. The hand tracking callback updates a shared state with wrist position, palm position, and 21-point hand landmarks.
+
+2. **Coordinate Mapping**: On first confident hand detection, the system establishes a mapping between the device coordinate frame and the MuJoCo world frame. This mapping includes:
+   - Origin calibration (device wrist position → robot end-effector position)
+   - Axis transformations (optional flipping via `--flip-x`, `--flip-y`, `--flip-z`)
+   - Scaling (via `--scale` parameter)
+
+3. **Target Smoothing**: Hand position updates are smoothed using exponential moving average (EMA) to reduce jitter and provide stable control.
+
+4. **Inverse Kinematics**: The system uses a damped least squares (DLS) IK solver to compute joint angles that position the end-effector at the target location. The IK runs iteratively each frame to track the moving target.
+
+5. **Visualization**: Optionally, the hand skeleton (21 landmarks with edges) can be visualized in the MuJoCo viewer, transformed to the same coordinate space as the robot.
+
+## Model Information
+
+The project includes optimized Franka Panda models with:
+- Adjusted joint positions for more natural arm posture
+- Modified joint limits to avoid gimbal lock configurations
+- Practical adjustments based on extensive hardware operation experience
+
+See `mujoco_models/franka_sim/README.md` for detailed model information.
+
+## Troubleshooting
+
+- **No hand detected**: Ensure your Aria device is streaming and hand tracking is enabled. Check the confidence threshold with `--conf`.
+- **Robot not moving**: Verify the `--ee-site` name matches a site in your model. Check that calibration completed successfully.
+- **Inverted movements**: Use `--flip-x`, `--flip-y`, or `--flip-z` to correct axis orientation.
+- **Jittery motion**: Reduce `--alpha` for more smoothing, or increase `--ik-damping` for more stable IK.
+
+## License
+
+See individual model licenses in `mujoco_models/franka_sim/LICENSE`.
+
+## Acknowledgments
+
+- Franka Panda robot meshes and specifications from [franka_ros](https://github.com/frankaemika/franka_ros)
+- MuJoCo physics simulator
+- Meta Aria SDK and Project Aria Tools
+
