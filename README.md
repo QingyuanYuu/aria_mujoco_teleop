@@ -105,8 +105,14 @@ mjpython scripts/aria_follow_mujoco.py \
 ```
 aria_mujoco_teleop/
 ├── README.md                          # This file
-├── scripts/
-│   └── aria_follow_mujoco.py         # Main teleoperation script
+├── scripts/                           # Main source code (modular architecture)
+│   ├── __init__.py                   # Package initialization
+│   ├── aria_follow_mujoco.py         # Main teleoperation script
+│   ├── hand_tracking.py              # Hand tracking state and callbacks
+│   ├── stream_receiver.py            # Aria stream receiver module
+│   ├── visualization.py              # MuJoCo visualization helpers
+│   ├── ik_solver.py                  # Inverse kinematics solver
+│   └── utils.py                      # Utility functions
 └── mujoco_models/
     └── franka_sim/                    # Franka Panda MuJoCo models
         ├── franka_panda.xml           # Standard Franka Panda model
@@ -116,20 +122,42 @@ aria_mujoco_teleop/
         └── meshes/                     # Robot mesh files
 ```
 
+### Module Architecture
+
+The codebase is organized into modular components for better maintainability and extensibility:
+
+- **`hand_tracking.py`**: Manages hand pose state, callbacks, and landmark extraction from Aria device
+- **`stream_receiver.py`**: Handles HTTP server setup and stream reception from Meta Aria glasses
+- **`visualization.py`**: Provides functions for drawing hand skeleton and markers in MuJoCo viewer
+- **`ik_solver.py`**: Implements position-based inverse kinematics using Damped Least Squares (DLS)
+- **`utils.py`**: Contains utility functions for coordinate transformations
+- **`aria_follow_mujoco.py`**: Main orchestration script that coordinates all modules
+
 ## How It Works
 
-1. **Hand Tracking Stream**: The script starts an HTTP server that receives hand tracking data from the Meta Aria device. The hand tracking callback updates a shared state with wrist position, palm position, and 21-point hand landmarks.
+The system follows a modular pipeline:
 
-2. **Coordinate Mapping**: On first confident hand detection, the system establishes a mapping between the device coordinate frame and the MuJoCo world frame. This mapping includes:
-   - Origin calibration (device wrist position → robot end-effector position)
-   - Axis transformations (optional flipping via `--flip-x`, `--flip-y`, `--flip-z`)
-   - Scaling (via `--scale` parameter)
+1. **Hand Tracking Stream** (`stream_receiver.py` + `hand_tracking.py`): 
+   - The stream receiver module starts an HTTP server that receives hand tracking data from the Meta Aria device
+   - The hand tracking callback (`hand_tracking.py`) updates a thread-safe shared state with wrist position, palm position, and 21-point hand landmarks
 
-3. **Target Smoothing**: Hand position updates are smoothed using exponential moving average (EMA) to reduce jitter and provide stable control.
+2. **Coordinate Mapping** (`utils.py`):
+   - On first confident hand detection, the system establishes a mapping between the device coordinate frame and the MuJoCo world frame
+   - This mapping includes:
+     - Origin calibration (device wrist position → robot end-effector position)
+     - Axis transformations (optional flipping via `--flip-x`, `--flip-y`, `--flip-z`)
+     - Scaling (via `--scale` parameter)
 
-4. **Inverse Kinematics**: The system uses a damped least squares (DLS) IK solver to compute joint angles that position the end-effector at the target location. The IK runs iteratively each frame to track the moving target.
+3. **Target Smoothing**:
+   - Hand position updates are smoothed using exponential moving average (EMA) to reduce jitter and provide stable control
 
-5. **Visualization**: Optionally, the hand skeleton (21 landmarks with edges) can be visualized in the MuJoCo viewer, transformed to the same coordinate space as the robot.
+4. **Inverse Kinematics** (`ik_solver.py`):
+   - The system uses a damped least squares (DLS) IK solver to compute joint angles that position the end-effector at the target location
+   - The IK runs iteratively each frame to track the moving target
+
+5. **Visualization** (`visualization.py`):
+   - Optionally, the hand skeleton (21 landmarks with edges) can be visualized in the MuJoCo viewer
+   - Hand markers are transformed to the same coordinate space as the robot for intuitive feedback
 
 ## Model Information
 

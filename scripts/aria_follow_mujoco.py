@@ -1,227 +1,28 @@
 #!/usr/bin/env python3
+"""
+Main script for Aria-MuJoCo teleoperation.
+
+This script orchestrates hand tracking, stream reception, visualization,
+and inverse kinematics to enable real-time robot control via hand movements.
+"""
 import argparse
 import time
-import threading
-from dataclasses import dataclass
-from typing import Optional, List, Tuple
 
 import numpy as np
 import mujoco
 import mujoco.viewer
 
-import aria.sdk_gen2 as sdk_gen2
-import aria.stream_receiver as receiver
-from projectaria_tools.core.mps import hand_tracking
+import sys
+import os
 
+# Add scripts directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# -----------------------------
-# Hand skeleton edges (MediaPipe-style 21 landmarks)
-# -----------------------------
-HAND_EDGES_21: List[Tuple[int, int]] = [
-    (0, 1), (1, 2), (2, 3), (3, 4),        # thumb
-    (0, 5), (5, 6), (6, 7), (7, 8),        # index
-    (0, 9), (9, 10), (10, 11), (11, 12),   # middle
-    (0, 13), (13, 14), (14, 15), (15, 16), # ring
-    (0, 17), (17, 18), (18, 19), (19, 20), # pinky
-]
-
-
-def _try_extract_landmarks_device(hand_obj) -> Optional[np.ndarray]:
-    """
-    Best-effort landmark extraction (device frame), because SDK versions differ.
-    Returns array (N,3) in meters, or None.
-    """
-    candidates = [
-        "get_landmark_positions_device",
-        "get_landmarks_device",
-        "landmark_positions_device",
-        "landmarks_device",
-        "keypoints_device",
-        "joints_device",
-    ]
-    for name in candidates:
-        if hasattr(hand_obj, name):
-            v = getattr(hand_obj, name)
-            try:
-                pts = v() if callable(v) else v
-                arr = np.array(pts, dtype=np.float64)
-                if arr.ndim == 2 and arr.shape[1] == 3 and arr.shape[0] >= 5:
-                    return arr
-            except Exception:
-                pass
-    return None
-
-
-# -----------------------------
-# Shared state
-# -----------------------------
-@dataclass
-class HandState:
-    t_ns: int = 0
-    valid: bool = False
-    conf: float = 0.0
-    wrist_dev: Optional[np.ndarray] = None    # (3,)
-    palm_dev: Optional[np.ndarray] = None     # (3,)
-    landmarks_dev: Optional[np.ndarray] = None # (N,3)
-
-
-_lock = threading.Lock()
-_hand = HandState()
-
-
-def hand_cb(ht: hand_tracking.HandTrackingResult):
-    """Update right-hand info in DEVICE frame."""
-    global _hand
-    now_ns = time.time_ns()
-
-    r = ht.right_hand
-    if r is None:
-        with _lock:
-            _hand.t_ns = now_ns
-            _hand.valid = False
-        return
-
-    wrist = np.array(r.get_wrist_position_device(), dtype=np.float64)
-    conf = float(r.confidence)
-
-    # palm (best-effort)
-    palm = None
-    try:
-        palm = np.array(r.get_palm_position_device(), dtype=np.float64)
-    except Exception:
-        palm = None
-
-    lm = _try_extract_landmarks_device(r)
-
-    with _lock:
-        _hand.t_ns = now_ns
-        _hand.valid = True
-        _hand.conf = conf
-        _hand.wrist_dev = wrist
-        _hand.palm_dev = palm
-        _hand.landmarks_dev = lm
-
-
-# -----------------------------
-# Receiver
-# -----------------------------
-def start_receiver(host: str, port: int):
-    cfg = sdk_gen2.HttpServerConfig()
-    cfg.address = host
-    cfg.port = port
-
-    sr = receiver.StreamReceiver(enable_image_decoding=False, enable_raw_stream=False)
-    sr.set_server_config(cfg)
-    sr.register_hand_pose_callback(hand_cb)
-
-    print(f"[Receiver] Listening on {host}:{port} ... (start your device streaming)")
-    sr.start_server()
-    return sr
-
-
-# -----------------------------
-# MuJoCo visualization helpers
-# -----------------------------
-def _safe_make_connector(geom, radius: float, p1: np.ndarray, p2: np.ndarray) -> bool:
-    """
-    Try to create a capsule connector between p1 and p2.
-    Some MuJoCo builds expose mjv_makeConnector; if not available, return False.
-    """
-    if not hasattr(mujoco, "mjv_makeConnector"):
-        return False
-    try:
-        mujoco.mjv_makeConnector(
-            geom,
-            mujoco.mjtGeom.mjGEOM_CAPSULE,
-            radius,
-            float(p1[0]), float(p1[1]), float(p1[2]),
-            float(p2[0]), float(p2[1]), float(p2[2]),
-        )
-        return True
-    except Exception:
-        return False
-
-
-def _draw_hand_markers(viewer, points_mj: np.ndarray, edges: Optional[List[Tuple[int, int]]],
-                       sphere_size: float = 0.008, edge_radius: float = 0.004):
-    """
-    Draw hand points (and edges if possible) into viewer.user_scn.
-    NOTE: We clear and redraw each frame (simple + robust).
-    """
-    scn = viewer.user_scn
-    scn.ngeom = 0
-
-    # points as spheres
-    for p in points_mj:
-        if scn.ngeom >= scn.maxgeom:
-            break
-        g = scn.geoms[scn.ngeom]
-        mujoco.mjv_initGeom(
-            g,
-            mujoco.mjtGeom.mjGEOM_SPHERE,
-            np.array([sphere_size, 0, 0], dtype=np.float64),
-            p.astype(np.float64),
-            np.eye(3).flatten(),
-            np.array([0.1, 1.0, 0.1, 1.0], dtype=np.float32),  # green
-        )
-        scn.ngeom += 1
-
-    # edges as capsules (optional)
-    if edges is None:
-        return
-
-    for i, j in edges:
-        if i >= len(points_mj) or j >= len(points_mj):
-            continue
-        if scn.ngeom >= scn.maxgeom:
-            break
-        p1, p2 = points_mj[i], points_mj[j]
-        g = scn.geoms[scn.ngeom]
-
-        ok = _safe_make_connector(g, edge_radius, p1, p2)
-        if not ok:
-            # If connector isn't available, just skip edges (points still shown)
-            return
-
-        g.rgba[:] = np.array([0.1, 0.8, 1.0, 1.0], dtype=np.float32)  # cyan
-        scn.ngeom += 1
-
-
-# -----------------------------
-# IK (position-only) with Damped Least Squares
-# -----------------------------
-def ik_step_pos(model, data, site_id, target_pos, damping=1e-2, step_scale=0.4, max_dq=0.12):
-    ee = data.site_xpos[site_id].copy()
-    err = (target_pos - ee).astype(np.float64)  # (3,)
-
-    jacp = np.zeros((3, model.nv), dtype=np.float64)
-    jacr = np.zeros((3, model.nv), dtype=np.float64)
-    mujoco.mj_jacSite(model, data, jacp, jacr, site_id)
-
-    JJt = jacp @ jacp.T
-    A = JJt + damping * np.eye(3)
-    y = np.linalg.solve(A, err)
-    dq = jacp.T @ y
-
-    dq = np.clip(dq, -max_dq, max_dq)
-    mujoco.mj_integratePos(model, data.qpos, dq * step_scale, 1)
-    mujoco.mj_forward(model, data)
-
-    return float(np.linalg.norm(err))
-
-
-# -----------------------------
-# Axis mapping utility
-# -----------------------------
-def apply_axis_ops(v: np.ndarray, flip_x: bool, flip_y: bool, flip_z: bool) -> np.ndarray:
-    out = v.copy()
-    if flip_x:
-        out[0] *= -1
-    if flip_y:
-        out[1] *= -1
-    if flip_z:
-        out[2] *= -1
-    return out
+from hand_tracking import HandState, get_hand_state, HAND_EDGES_21
+from stream_receiver import start_receiver
+from visualization import draw_hand_markers, clear_markers
+from ik_solver import ik_step_pos
+from utils import apply_axis_ops
 
 
 def main():
@@ -270,8 +71,7 @@ def main():
     origin_mj = data.site_xpos[site_id].copy()
 
     while origin_dev is None:
-        with _lock:
-            h = HandState(**_hand.__dict__)
+        h = get_hand_state()
         if h.valid and h.wrist_dev is not None and h.conf >= args.conf:
             origin_dev = h.wrist_dev.copy()
             origin_mj = data.site_xpos[site_id].copy()
@@ -290,8 +90,7 @@ def main():
         with mujoco.viewer.launch_passive(model, data) as viewer:
             while viewer.is_running():
                 now_ns = time.time_ns()
-                with _lock:
-                    h = HandState(**_hand.__dict__)
+                h = get_hand_state()
 
                 age_s = (now_ns - h.t_ns) / 1e9 if h.t_ns else 999.0
 
@@ -339,7 +138,7 @@ def main():
                             pts_delta[:, 2] *= -1
 
                         pts_mj = origin_mj[None, :] + pts_delta
-                        _draw_hand_markers(
+                        draw_hand_markers(
                             viewer,
                             pts_mj,
                             edges=edges,
@@ -348,7 +147,7 @@ def main():
                         )
                     else:
                         # clear markers if no data
-                        viewer.user_scn.ngeom = 0
+                        clear_markers(viewer)
 
                 # Some mujoco versions don't expose viewer.overlay on the passive handle.
                 if hasattr(viewer, "overlay"):
