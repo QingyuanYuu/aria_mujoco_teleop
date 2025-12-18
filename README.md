@@ -18,7 +18,7 @@ This project provides a seamless interface between Meta Aria's hand tracking cap
 
 ### Hardware
 - Meta Aria glasses with hand tracking enabled
-- MacOS (tested on macOS)
+- macOS (tested on macOS) or Ubuntu 24.04 (tested on Ubuntu 24.04)
 
 ### Software Dependencies
 - Python 3.x
@@ -28,6 +28,8 @@ This project provides a seamless interface between Meta Aria's hand tracking cap
 - NumPy
 
 ## Installation
+
+### macOS
 
 1. **Install MuJoCo Python bindings:**
    ```bash
@@ -45,11 +47,44 @@ This project provides a seamless interface between Meta Aria's hand tracking cap
    pip install numpy
    ```
 
+### Ubuntu 24.04
+
+1. **Install system dependencies:**
+   ```bash
+   sudo apt update
+   sudo apt install python3-pip python3-dev
+   ```
+
+2. **Install MuJoCo Python bindings:**
+   ```bash
+   pip3 install mujoco
+   ```
+
+3. **Install Meta Aria SDK and Project Aria Tools:**
+   Follow the official Meta Aria SDK installation instructions to set up:
+   - `aria.sdk_gen2`
+   - `aria.stream_receiver`
+   - `projectaria_tools`
+
+4. **Install NumPy:**
+   ```bash
+   pip3 install numpy
+   ```
+
+**Note**: On Ubuntu, you may need to use `pip3` instead of `pip` depending on your Python installation. It's recommended to use a virtual environment:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install mujoco numpy
+   ```
+
 ## Usage
 
-### Basic Usage (Mac)
+### Basic Usage
 
-On Mac, run the following command:
+#### macOS
+
+On macOS, run the following command:
 
 ```bash
 mjpython scripts/aria_follow_mujoco.py \
@@ -58,6 +93,20 @@ mjpython scripts/aria_follow_mujoco.py \
   --show-hand \
   --flip-z
 ```
+
+#### Ubuntu 24.04
+
+On Ubuntu 24.04, run the following command:
+
+```bash
+python3 scripts/aria_follow_mujoco.py \
+  --model mujoco_models/franka_sim/franka_panda.xml \
+  --ee-site end_effector \
+  --show-hand \
+  --flip-z
+```
+
+**Note**: On Ubuntu, you may need to use `python3` instead of `mjpython` depending on your MuJoCo installation. If you have `mjpython` installed, you can use it as well.
 
 ### Command Line Arguments
 
