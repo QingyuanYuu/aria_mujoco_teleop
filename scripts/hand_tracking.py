@@ -32,6 +32,7 @@ class HandState:
     wrist_dev: Optional[np.ndarray] = None    # (3,)
     palm_dev: Optional[np.ndarray] = None     # (3,)
     landmarks_dev: Optional[np.ndarray] = None # (N,3)
+    wrist_to_palm_dir_dev: Optional[np.ndarray] = None  # (3,) normalized direction from wrist to palm
 
 
 # Shared state (thread-safe)
@@ -82,10 +83,18 @@ def hand_cb(ht: hand_tracking.HandTrackingResult):
 
     # palm (best-effort)
     palm = None
+    wrist_to_palm_dir = None
     try:
         palm = np.array(r.get_palm_position_device(), dtype=np.float64)
+        # Compute direction from wrist to palm
+        if palm is not None:
+            dir_vec = palm - wrist
+            dir_norm = np.linalg.norm(dir_vec)
+            if dir_norm > 1e-6:  # Avoid division by zero
+                wrist_to_palm_dir = dir_vec / dir_norm
     except Exception:
         palm = None
+        wrist_to_palm_dir = None
 
     lm = _try_extract_landmarks_device(r)
 
@@ -96,6 +105,7 @@ def hand_cb(ht: hand_tracking.HandTrackingResult):
         _hand.wrist_dev = wrist
         _hand.palm_dev = palm
         _hand.landmarks_dev = lm
+        _hand.wrist_to_palm_dir_dev = wrist_to_palm_dir
 
 
 def get_hand_state() -> HandState:
