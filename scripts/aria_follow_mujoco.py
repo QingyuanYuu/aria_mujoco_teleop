@@ -23,7 +23,7 @@ from stream_receiver import start_receiver
 from visualization import draw_hand_markers, clear_markers
 from ik_solver import ik_step_pos, ik_step_pos_body, ik_step_pos_orient, ik_step_pos_orient_body, direction_to_quaternion
 from utils import apply_axis_ops, quaternion_to_forward
-from finger_control import _set_finger_qpos_and_forward, pinch_to_gripper_value
+from finger_control import FingerTeleop
 
 
 def main():
@@ -56,11 +56,8 @@ def main():
     ap.add_argument("--hand-edge-radius", type=float, default=0.004, help="Hand edge capsule radius")
     
     # finger control
-    ap.add_argument("--enable-fingers", action="store_true", help="Enable finger control (thumb->left, index->right)")
-    ap.add_argument("--finger-alpha", type=float, default=0.3, help="Finger control smoothing (0..1)")
-    ap.add_argument("--finger-min-dist", type=float, default=0.02, help="Min finger distance for closed gripper (m)")
-    ap.add_argument("--finger-max-dist", type=float, default=0.12, help="Max finger distance for open gripper (m)")
-    ap.add_argument("--finger-amplify", type=float, default=1.0, help="Amplification factor for distance-to-gripper mapping (default: 8.0, increase to make small distance changes more visible)")
+    ap.add_argument("--enable-fingers", action="store_true", help="Enable finger control (auto-calibrated pinch-to-gripper)")
+    ap.add_argument("--finger-alpha", type=float, default=0.7, help="Finger control smoothing (0..1, higher = faster response)")
     ap.add_argument("--finger-verbose", action="store_true", help="Print finger control debug information")
     ap.add_argument("--test-fingers", action="store_true", help="Run finger oscillation test before starting teleoperation")
 
@@ -159,8 +156,20 @@ def main():
         target_quat = data.site_xquat[site_id].copy()
     target_quat_smooth = target_quat.copy()
 
-    # Initialize gripper value (persistent across frames)
-    gripper_value = 0.0
+    # Initialize finger teleop controller (auto-calibrated)
+    finger_teleop = None
+    if args.enable_fingers:
+        try:
+            finger_teleop = FingerTeleop(
+                model,
+                alpha=args.finger_alpha,
+                init_value=0.02,  # start half-open
+            )
+            print("[Teleop] Finger control enabled (auto-calibrated)")
+        except Exception as e:
+            print(f"[Teleop] WARNING: Failed to initialize finger control: {e}")
+            print("[Teleop] Continuing without finger control...")
+            args.enable_fingers = False
 
     # --- sanity test: oscillate finger joints for 2 seconds ---
     if args.test_fingers:
@@ -238,25 +247,6 @@ def main():
                     
                     target_smooth = (1 - args.alpha) * target_smooth + args.alpha * target
 
-                # --- finger control (every frame) ---
-                # 1) get thumb/index (from landmarks) if available
-                thumb_pos, index_pos = None, None
-                if args.enable_fingers and h.valid and h.landmarks_dev is not None and h.landmarks_dev.shape[0] >= 21:
-                    thumb_pos = h.landmarks_dev[4]
-                    index_pos = h.landmarks_dev[8]
-
-                # 2) compute new gripper value (keep last if invalid)
-                if thumb_pos is not None and index_pos is not None:
-                    gripper_value = pinch_to_gripper_value(
-                        thumb_pos, index_pos,
-                        min_distance=args.finger_min_dist,
-                        max_distance=args.finger_max_dist,
-                        alpha=args.finger_alpha,
-                        prev_value=gripper_value,   # keep a persistent variable outside loop
-                        scale=1.0,
-                        amplify=args.finger_amplify,
-                    )
-
                 # IK step
                 # Note: target_smooth already includes the offset along gripper-to-fingers direction
                 # Exclude finger joints from IK to prevent overwriting finger control
@@ -301,9 +291,15 @@ def main():
                             exclude_joints=exclude_joints if exclude_joints else None,
                         )
                 
-                # 3) apply to qpos + forward (like the test script)
-                if args.enable_fingers:
-                    _set_finger_qpos_and_forward(model, data, gripper_value, verbose=args.finger_verbose)
+                # --- finger control (after IK to prevent IK from overwriting) ---
+                # Use auto-calibrated finger teleop controller
+                if args.enable_fingers and finger_teleop is not None:
+                    finger_teleop.update_from_landmarks(
+                        data,
+                        h.landmarks_dev if h.valid else None,
+                        do_forward=True,  # Apply finger control and call mj_forward
+                        verbose=args.finger_verbose,
+                    )
 
                 # hand skeleton visualization in same mapped space (optional)
                 if args.show_hand:
